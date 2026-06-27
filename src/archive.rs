@@ -422,6 +422,111 @@ impl Archive {
         Ok(events)
     }
 
+    /// Empty `room_ids` spans all rooms.
+    pub fn query_events_multi(
+        &self,
+        room_ids: &[String],
+        after_ms: Option<i64>,
+        before_ms: Option<i64>,
+        senders: &[String],
+        msgtypes: &[String],
+        event_types: &[String],
+    ) -> anyhow::Result<Vec<ArchivedMessage>> {
+        let mut sql = String::from(
+            "SELECT event_id, room_id, room_name, sender, timestamp, ts_millis, type, msgtype, body, media_path, thumbnail_path, raw_json \
+             FROM events WHERE ts_millis > ?1 AND ts_millis < ?2",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        param_values.push(Box::new(after_ms.unwrap_or(i64::MIN)));
+        param_values.push(Box::new(before_ms.unwrap_or(i64::MAX)));
+
+        let mut idx = 3;
+        let mut push_in = |sql: &mut String,
+                           param_values: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+                           col: &str,
+                           values: &[String]| {
+            if values.is_empty() {
+                return;
+            }
+            let placeholders: Vec<String> =
+                values.iter().enumerate().map(|(i, _)| format!("?{}", idx + i)).collect();
+            sql.push_str(&format!(" AND {col} IN ({})", placeholders.join(",")));
+            for v in values {
+                param_values.push(Box::new(v.clone()));
+            }
+            idx += values.len();
+        };
+        push_in(&mut sql, &mut param_values, "room_id", room_ids);
+        push_in(&mut sql, &mut param_values, "sender", senders);
+        push_in(&mut sql, &mut param_values, "msgtype", msgtypes);
+        push_in(&mut sql, &mut param_values, "type", event_types);
+
+        sql.push_str(" ORDER BY ts_millis ASC");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(params.as_slice(), Self::row_to_message)?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row?);
+        }
+        Ok(events)
+    }
+
+    pub fn events_around(
+        &self,
+        room_id: &str,
+        anchor_ms: i64,
+        n_before: usize,
+        n_after: usize,
+    ) -> anyhow::Result<Vec<ArchivedMessage>> {
+        let mut out = Vec::new();
+        if n_before > 0 {
+            let mut stmt = self.conn.prepare(
+                "SELECT event_id, room_id, room_name, sender, timestamp, ts_millis, type, msgtype, body, media_path, thumbnail_path, raw_json \
+                 FROM events WHERE room_id = ?1 AND ts_millis < ?2 ORDER BY ts_millis DESC LIMIT ?3",
+            )?;
+            let rows =
+                stmt.query_map(params![room_id, anchor_ms, n_before as i64], Self::row_to_message)?;
+            let mut before: Vec<ArchivedMessage> = Vec::new();
+            for row in rows {
+                before.push(row?);
+            }
+            before.reverse();
+            out.extend(before);
+        }
+        if n_after > 0 {
+            let mut stmt = self.conn.prepare(
+                "SELECT event_id, room_id, room_name, sender, timestamp, ts_millis, type, msgtype, body, media_path, thumbnail_path, raw_json \
+                 FROM events WHERE room_id = ?1 AND ts_millis > ?2 ORDER BY ts_millis ASC LIMIT ?3",
+            )?;
+            let rows =
+                stmt.query_map(params![room_id, anchor_ms, n_after as i64], Self::row_to_message)?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    fn row_to_message(row: &rusqlite::Row) -> rusqlite::Result<ArchivedMessage> {
+        Ok(ArchivedMessage {
+            event_id: row.get(0)?,
+            room_id: row.get(1)?,
+            room_name: row.get(2)?,
+            sender: row.get(3)?,
+            timestamp: row.get(4)?,
+            ts_millis: row.get(5)?,
+            event_type: row.get(6)?,
+            msgtype: row.get(7)?,
+            body: row.get(8)?,
+            media_path: row.get(9)?,
+            thumbnail_path: row.get(10)?,
+            raw_json: row.get(11)?,
+        })
+    }
+
     /// Find a room_id by name or ID from archived events.
     pub fn find_room_id(&self, target: &str) -> anyhow::Result<Option<String>> {
         if target.starts_with('!') {

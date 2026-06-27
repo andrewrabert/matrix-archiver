@@ -4,11 +4,12 @@ mod session;
 
 use std::path::PathBuf;
 
+use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 
 use crate::commands::login::Login;
 use crate::commands::media::Media;
-use crate::commands::messages::{self, Messages};
+use crate::commands::messages::{self, Messages, Order};
 use crate::commands::rooms::Rooms;
 use crate::commands::sync::SyncCmd;
 use crate::commands::verify::Verify;
@@ -38,6 +39,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Log in to a Matrix homeserver
     Login,
@@ -144,6 +146,39 @@ enum Commands {
         /// Show only pinned events
         #[arg(long)]
         pinned: bool,
+        /// Keep events whose body matches this regex, repeatable (matches any)
+        #[arg(long)]
+        pattern: Vec<String>,
+        /// Drop events whose body matches this regex, repeatable (matches any)
+        #[arg(long = "not-pattern")]
+        not_pattern: Vec<String>,
+        /// Match patterns case-sensitively (default: insensitive)
+        #[arg(long)]
+        case_sensitive: bool,
+        /// Restrict to favorite rooms
+        #[arg(long)]
+        favorites: bool,
+        /// Relative window: events within the last N days
+        #[arg(long)]
+        days: Option<u32>,
+        /// Relative window: events within the last N hours
+        #[arg(long)]
+        hours: Option<u32>,
+        /// Which end --max-count keeps
+        #[arg(long, value_enum, default_value_t = Order::Newest)]
+        order: Order,
+        /// Cap the total number of matches returned
+        #[arg(long)]
+        max_count: Option<usize>,
+        /// Show N events before and after each result
+        #[arg(long)]
+        context: Option<usize>,
+        /// Show N events before each result
+        #[arg(long)]
+        before_context: Option<usize>,
+        /// Show N events after each result
+        #[arg(long)]
+        after_context: Option<usize>,
     },
 }
 
@@ -233,9 +268,34 @@ async fn main() -> anyhow::Result<()> {
             r#type,
             raw,
             pinned,
+            pattern,
+            not_pattern,
+            case_sensitive,
+            favorites,
+            days,
+            hours,
+            order,
+            max_count,
+            context,
+            before_context,
+            after_context,
         } => {
-            let after = after.map(|s| messages::parse_datetime(&s)).transpose()?;
-            let before = before.map(|s| messages::parse_datetime(&s)).transpose()?;
+            if (days.is_some() || hours.is_some()) && (after.is_some() || before.is_some()) {
+                anyhow::bail!("--days/--hours cannot be combined with --after/--before");
+            }
+            let (after, before) = if days.is_some() || hours.is_some() {
+                let now = Utc::now().naive_utc();
+                let span = Duration::days(days.unwrap_or(0) as i64)
+                    + Duration::hours(hours.unwrap_or(0) as i64);
+                (Some(now - span), Some(now))
+            } else {
+                (
+                    after.map(|s| messages::parse_datetime(&s)).transpose()?,
+                    before.map(|s| messages::parse_datetime(&s)).transpose()?,
+                )
+            };
+            let before_context = before_context.or(context).unwrap_or(0);
+            let after_context = after_context.or(context).unwrap_or(0);
             let db = cli.data.join("archive.db");
             Messages {
                 room_ids: room_id,
@@ -248,6 +308,14 @@ async fn main() -> anyhow::Result<()> {
                 event_type: r#type,
                 raw,
                 pinned,
+                patterns: pattern,
+                not_patterns: not_pattern,
+                case_sensitive,
+                favorites,
+                order,
+                max_count,
+                before_context,
+                after_context,
             }
             .run(&db)
         }

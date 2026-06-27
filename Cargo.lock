@@ -1837,6 +1837,7 @@ dependencies = [
  "chrono",
  "clap",
  "matrix-sdk",
+ "regex",
  "rpassword",
  "rusqlite",
  "serde",

@@ -12,6 +12,7 @@ anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 matrix-sdk = "0.17"
+regex = "1"
 rpassword = "7"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
