@@ -1,6 +1,6 @@
 [package]
 name = "matrix-archiver"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Local incremental archiving of Matrix rooms"
